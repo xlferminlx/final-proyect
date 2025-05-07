@@ -80,6 +80,24 @@ def NewClient(clientSocket, address):
                         while chunk := videofile.read(1 << 20):
                             clientSocket.sendall(chunk)
 
+            #Server ack the delete
+            elif IncomingCommand == 'delete':
+                if not currentUser:
+                    continue
+                clientSocket.send('filename'.encode())
+                fileName = clientSocket.recv(1024).decode()
+                if fileName in fileStorage and fileStorage[fileName] == currentUser:
+                    try:
+                        os.remove(os.path.join(filePath, fileName))
+                        del fileStorage[fileName]
+                        clientSocket.send('deleted'.encode())
+                        print(f"{fileName} deleted by {currentUser}")
+                    except:
+                        clientSocket.send('error'.encode())
+                else:
+                    clientSocket.send('unauthorized'.encode())
+
+
 
 def SaveFiles():
     global fileStorage
