@@ -1,181 +1,225 @@
-from socket import * 
-from threading import *
-import pickle; from datetime import *
-import tkinter as tk; from tkinter import filedialog
-import os
+from tkinter import filedialog; import tkinter as tk
+from socket import *; from threading import *
+from videoplayer import *
+import pickle
 
-fileStorage = {}
-userLoginInfo = {}
-connections = []
+Server = '172.16.40.4'
+Port = 12345
+filePath = 'c:\\Users\\Evan\\Downloads'
 
+#Create socket
+clientSocket = socket(AF_INET, SOCK_STREAM)
 
-def NewClient(clientSocket, address):
-    global fileStorage
-    global userLoginInfo
-    global connections
+#Connect client to server
+clientSocket.connect((Server, Port))
 
-    connections.append(clientSocket)
-    currentUser = None
-
-    while True:
-        try:
-            IncomingCommand = clientSocket.recv(1024).decode()
-        except:
-            break
-        else:
-            if IncomingCommand == 'login':
-                clientSocket.send('username'.encode())
-                userName = clientSocket.recv(1024).decode()
-                clientSocket.send('password'.encode())
-                userPass = clientSocket.recv(1024).decode()
-                if userName in userLoginInfo and userLoginInfo[userName] == userPass:
-                    currentUser = userName
-                    clientSocket.send('login'.encode())
-                else:
-                    clientSocket.send('incorrect'.encode())
-
-            elif IncomingCommand == 'signup':
-                clientSocket.send('username'.encode())
-                userName = clientSocket.recv(1024).decode()
-                clientSocket.send('password'.encode())
-                userPass = clientSocket.recv(1024).decode()
-                if userName in userLoginInfo:
-                    clientSocket.send('reject'.encode())
-                else:
-                    userLoginInfo[userName] = userPass
-                    clientSocket.send('signup'.encode())
-
-            elif IncomingCommand == 'put':
-                if not currentUser:
-                    continue
-                clientSocket.send('filename'.encode())
-                fileName = clientSocket.recv(1024).decode()
-                if fileName in fileStorage:
-                    clientSocket.send('reject'.encode())
-                else:
-                    clientSocket.send('file'.encode())
-                    with open(filePath + fileName, 'wb') as file:
-                        while True:
-                            chunk = clientSocket.recv(1 << 20)
-                            if not chunk:
-                                break
-                            file.write(chunk)
-                            if len(chunk) < (1 << 20):
-                                break
-                    fileStorage[fileName] = currentUser
-                    print(f"Uploaded: {fileName} by {currentUser}")
-
-            elif IncomingCommand == 'list':
-                data = pickle.dumps(fileStorage, -1)
-                size_header = str(len(data)).encode().ljust(1024) 
-                clientSocket.send(size_header)
-                clientSocket.sendall(data)
-
-            elif IncomingCommand == 'get':
-                clientSocket.send('filename'.encode())
-                fileName = clientSocket.recv(1024).decode()
-                if fileName in fileStorage:
-                    clientSocket.send('download'.encode())
-                    with open(filePath + fileName, 'rb') as videofile:
-                        while chunk := videofile.read(1 << 20):
-                            clientSocket.sendall(chunk)
-
-            #Server ack the delete
-            elif IncomingCommand == 'delete':
-                if not currentUser:
-                    continue
-                clientSocket.send('filename'.encode())
-                fileName = clientSocket.recv(1024).decode()
-                if fileName in fileStorage and fileStorage[fileName] == currentUser:
-                    try:
-                        os.remove(os.path.join(filePath, fileName))
-                        del fileStorage[fileName]
-                        clientSocket.send('deleted'.encode())
-                        print(f"{fileName} deleted by {currentUser}")
-                    except:
-                        clientSocket.send('error'.encode())
-                else:
-                    clientSocket.send('unauthorized'.encode())
+def PlayVideo(fileName):
+    mainFrame.pack_forget()
+    player = VideoPlayer(root)
+    player.open_file(fileName)
+    player.play_video()
 
 
+def GetVideo(fileName, uploader):
+    clientSocket.send('get'.encode())
+    request = clientSocket.recv(1024).decode()
+    if request == 'filename':
+        clientSocket.send(fileName.encode())
+    request = clientSocket.recv(1024).decode()
+    if request == 'download':
+        tempFile = filePath + 'temp-' + fileName
+        with open(tempFile, 'wb') as file:
+            while True:
+                chunk = clientSocket.recv(1 << 20)
+                if not chunk:
+                    break
+                file.write(chunk)
+                if len(chunk) < (1 << 20):
+                    break
+        PlayVideo(tempFile)
 
-def SaveFiles():
-    global fileStorage
-    saveFile = open(filePath + 'backup' + datetime.now().strftime('%Y-%m-%d-%H%M%S') +'.txt','wb')
-    pickle.dump(fileStorage, saveFile)
-    saveFile.close()
-
-
-def LoadFiles():
-    global fileStorage
-    fileName = filedialog.askopenfilename(title='Select Backup File to Load',filetypes=[('All Files','*.*')])
-    loadFile = open(fileName,'rb')
-    fileStorage = pickle.load(loadFile)
-
-
-def SaveCredentials():
-    with open(os.path.join(filePath, 'usercredentials.txt'), 'wb') as saveFile:
-        pickle.dump(userLoginInfo, saveFile)
-
-
-def LoadCredentials():
-    global userLoginInfo
+def ListVideos():
+    for widget in mainFrame.winfo_children():
+        widget.pack_forget()
+    clientSocket.send('list'.encode())
+    sizeData = clientSocket.recv(1024)
     try:
-        with open(os.path.join(filePath, 'usercredentials.txt'), 'rb') as loadFile:
-            userLoginInfo = pickle.load(loadFile)
-    except:
-        pass
+        size = int(sizeData.decode().strip())
+    except ValueError:
+        print("Error: Received invalid size header")
+        return
+    buffer = b''
+    while len(buffer) < size:
+        data = clientSocket.recv(min(4096, size - len(buffer)))
+        if not data:
+            break
+        buffer += data
+    try:
+        videolist = pickle.loads(buffer)
+    except Exception as e:
+        print("Error loading video list:", e)
+        return
+    if not videolist:
+        emptyLabel = tk.Label(mainFrame, text="No videos available.")
+        emptyLabel.pack(pady=10)
+    for video in videolist:
+        for video in videolist:
+            videoFrame = tk.Frame(mainFrame)
+            videoFrame.pack(pady=5)
 
 
-def InputListener():
+            #had to add the Delet into client
+            tk.Button(videoFrame, text=f"Play {video} by {videolist[video]}", command=lambda v=video, u=videolist[video]: GetVideo(v, u)).pack(side='left', padx=5)
+            tk.Button(videoFrame, text="Delete", command=lambda v=video, u=videolist[video]: DeleteVideo(v, u)).pack(side='left')
+
+    backButton = tk.Button(mainFrame, text='Back', command=MainScreen)
+    backButton.pack(pady=10)
+
+def MainScreen():
+    root.title('Home')
+    for widget in mainFrame.winfo_children():
+        widget.pack_forget()
+
+    welcomeLabel.pack()
+    welcomeLabel.config(text='Welcome! Browse Videos or Upload a Video.')
+
+    tk.Button(mainFrame, text='Browse Videos', command=ListVideos).pack(pady=5)
+    tk.Button(mainFrame, text='Upload Video', command=UploadVideo).pack(pady=5)
+    tk.Button(mainFrame, text='Delete Video').pack(pady=5)
+    tk.Button(mainFrame, text='Log Out', command=LoginScreen).pack(pady=10)
+
+def SendLoginInfo(userName, userPass):
+    clientSocket.send('login'.encode())
     while True:
-        serverInput = input()
-        if serverInput == 'save':
-            SaveCredentials()
-        elif serverInput == 'list':
-            for file in fileStorage:
-                print(f"{file}, Uploaded by - {fileStorage[file]}")
-        elif serverInput.startswith('delete '):
-            fileDelete = serverInput.removeprefix('delete ')
-            if fileDelete in fileStorage:
-                os.remove(os.path.join(filePath, fileDelete))
-                del fileStorage[fileDelete]
-        elif serverInput == 'close':
-            for connection in connections:
-                connection.close()
-            SaveCredentials()
-            serverSocket.close()
+        request = clientSocket.recv(1024).decode()
+        if request == 'username':
+            clientSocket.send(userName.encode())
+        elif request == 'password':
+            clientSocket.send(userPass.encode())
+        elif request == 'incorrect':
+            welcomeLabel.pack()
+            welcomeLabel.config(text='Username or Password is Incorrect')
+            break
+        elif request == 'login':
+            MainScreen()
             break
 
-
-def main():
-    #Initiliazation
-    global filePath
-    filePath = 'c:\\Users\\Evan\\Downloads'
-    Host = '0.0.0.0'
-    Port = 12345
-    LoadCredentials()
-    serverSocket = socket(AF_INET, SOCK_STREAM)
-    serverSocket.bind((Host, Port))
-    serverSocket.listen(5)
-    print('Listening for clients to connect...')
-
-    Thread(target=InputListener).start()
-    Thread(target=lambda: tk.Tk().withdraw()).start()
-
+def SendSignupInfo(userName, userPass):
+    clientSocket.send('signup'.encode())
     while True:
-        try:
-            connection, address = serverSocket.accept()
-            print('Got connection from', address)
-            Thread(target=NewClient, args=(connection, address)).start()
-        except:
+        request = clientSocket.recv(1024).decode()
+        if request == 'username':
+            clientSocket.send(userName.encode())
+        elif request == 'password':
+            clientSocket.send(userPass.encode())
+        elif request == 'reject':
+            welcomeLabel.config(text='Username is Already Taken')
+            break
+        elif request == 'signup':
+            LoginScreen()
             break
 
+def LoginScreen():
+    root.title('Log in')
+    for widget in mainFrame.winfo_children():
+        widget.pack_forget()
 
-#Start
+    userName = tk.StringVar()
+    userPass = tk.StringVar()
 
-    #Create Socket
-serverSocket = socket(AF_INET, SOCK_STREAM)
+    tk.Label(mainFrame, text='Enter Username:').pack(pady=2)
+    tk.Entry(mainFrame, textvariable=userName).pack(pady=5)
 
-if __name__ == '__main__':
-    main()
+    tk.Label(mainFrame, text='Enter Password:').pack(pady=2)
+    tk.Entry(mainFrame, textvariable=userPass, show='*').pack(pady=5)
+
+    tk.Button(mainFrame, text='Log In', command=lambda: SendLoginInfo(userName.get(), userPass.get())).pack(pady=5)
+
+    tk.Label(mainFrame, text="Don't have an Account?").pack(pady=10)
+    SignupButton.config(command=SignupScreen)
+    SignupButton.pack()
+
+def SignupScreen():
+    root.title('Sign up')
+    for widget in mainFrame.winfo_children():
+        widget.pack_forget()
+
+    userName = tk.StringVar()
+    userPass = tk.StringVar()
+
+    tk.Label(mainFrame, text='Choose Username:').pack(pady=2)
+    tk.Entry(mainFrame, textvariable=userName).pack(pady=5)
+
+    tk.Label(mainFrame, text='Choose Password:').pack(pady=2)
+    tk.Entry(mainFrame, textvariable=userPass, show='*').pack(pady=5)
+
+    SignupButton.pack(pady=5)
+    SignupButton.config(command=lambda: SendSignupInfo(userName.get(), userPass.get()))
+
+    tk.Label(mainFrame, text='Already have an Account?').pack(pady=10)
+    loginButton.config(command=LoginScreen)
+    loginButton.pack()
+
+
+def UploadVideo():
+    clientSocket.send('put'.encode())
+    fileName = filedialog.askopenfilename(title='Select a Video File',filetypes=[('Video Files',"*.mp4;*.avi;*.mkv;*.mov"),('All Files','*.*')])
+    file = open(fileName,'rb')
+    while True:
+        request = clientSocket.recv(1024).decode()
+        if request == 'filename':
+            fileShort = fileName.split('/')[-1]
+            clientSocket.send(fileShort.encode())
+        if request == 'reject':
+            rejectLabel=tk.Label(mainFrame,text='A Video With That Name Already Exists.')
+            rejectLabel.pack()
+        if request == 'file':
+            while chunk:=file.read(1 << 20):
+                clientSocket.sendall(chunk)
+            uploadLabel = tk.Label(mainFrame,text='File Uploaded succesfully')
+            uploadLabel.pack()
+            break
+    file.close()
+
+
+
+
+#Delete function for client
+def DeleteVideo(fileName, uploader):
+    clientSocket.send('delete'.encode())
+    request = clientSocket.recv(1024).decode()
+    if request == 'filename':
+        clientSocket.send(fileName.encode())
+        result = clientSocket.recv(1024).decode()
+        if result == 'deleted':
+            msg = f'{fileName} was deleted successfully.'
+        elif result == 'unauthorized':
+            msg = f'You are not authorized to delete {fileName}.'
+        else:
+            msg = f'Error deleting {fileName}.'
+        statusLabel = tk.Label(mainFrame, text=msg)
+        statusLabel.pack()
+        ListVideos()
+
+
+root = tk.Tk()
+screenWidth = root.winfo_screenwidth()
+screenHeight = root.winfo_screenheight()
+
+root.title('Log in or Sign Up')
+root.state('zoomed')
+
+mainFrame = tk.Frame(root)
+mainFrame.pack(pady=screenHeight / 3)
+
+welcomeLabel = tk.Label(mainFrame, text='Welcome! Please Log in if you already have an account, or sign up to create one.')
+welcomeLabel.pack()
+
+loginButton = tk.Button(mainFrame, text='Log In', command=LoginScreen)
+loginButton.pack(pady=5)
+
+SignupButton = tk.Button(mainFrame, text='Sign Up', command=SignupScreen)
+SignupButton.pack(pady=5)
+
+
+root.mainloop()
